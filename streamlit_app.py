@@ -1,7 +1,6 @@
 import streamlit as st
 import json
 import numpy as np
-from sentence_transformers import SentenceTransformer, util
 import google.generativeai as genai
 from gtts import gTTS
 import tempfile
@@ -58,39 +57,21 @@ def flatten_memory(data):
 
     return [t for t in texts if t.strip() != ""]
 
-
 memory_texts = flatten_memory(memory_data)
 
 # --------------------------------
-# LOAD EMBEDDING MODEL
-# --------------------------------
-@st.cache_resource
-def load_model():
-    return SentenceTransformer("all-MiniLM-L6-v2")
-
-embed_model = load_model()
-
-# --------------------------------
-# CACHE EMBEDDINGS (IMPORTANT FIX)
-# --------------------------------
-@st.cache_resource
-def compute_embeddings(texts):
-    return embed_model.encode(texts, convert_to_tensor=True)
-
-memory_embeddings = compute_embeddings(memory_texts)
-
-# --------------------------------
-# RETRIEVE CONTEXT (OPTIMIZED)
+# SIMPLE CONTEXT RETRIEVAL (NO HEAVY MODEL)
 # --------------------------------
 def retrieve_context(query, top_k=3):
-    if not memory_texts:
-        return []
+    query = query.lower()
 
-    query_emb = embed_model.encode(query, convert_to_tensor=True)
-    scores = util.pytorch_cos_sim(query_emb, memory_embeddings)[0]
+    scored = []
+    for text in memory_texts:
+        score = sum(1 for word in query.split() if word in text.lower())
+        scored.append((score, text))
 
-    top_idx = np.argsort(-scores.cpu().numpy())[:top_k]
-    return [memory_texts[i] for i in top_idx]
+    scored.sort(reverse=True)
+    return [t for s, t in scored[:top_k] if s > 0]
 
 # --------------------------------
 # SAVE MEMORY
@@ -129,19 +110,19 @@ def speak(text, emotion):
     return tmp.name
 
 # --------------------------------
-# SAFE GENERATION FUNCTION (FIX)
+# SAFE GENERATION
 # --------------------------------
 def generate_response(prompt):
     model = genai.GenerativeModel("models/gemini-2.5-flash")
 
-    for i in range(3):  # retry logic
+    for i in range(3):
         try:
             response = model.generate_content(prompt)
             return response.text.strip()
-        except Exception as e:
+        except Exception:
             time.sleep(3)
 
-    return "⚠️ I'm facing high load right now. Please try again later."
+    return "⚠️ Server busy. Please try again later."
 
 # --------------------------------
 # DISCLAIMER
@@ -150,8 +131,6 @@ st.warning("""
 ⚠️ Research Prototype.
 Jabez AI is a synthetic persona for study purposes.
 It does NOT represent a real human.
-It does NOT replace real relationships.
-Designed under Ethical AI principles.
 """)
 
 # --------------------------------
@@ -189,14 +168,12 @@ if st.button("Send") and user_input.strip():
 
     st.session_state.chat.append(("user", user_input))
 
-    # 🔥 RETRIEVE CONTEXT
+    # CONTEXT
     context = retrieve_context(user_input)
-
-    # 🔥 LIMIT CONTEXT SIZE (CRITICAL FIX)
     context_text = "\n".join([c[:300] for c in context])
     context_text = context_text[:1000]
 
-    # MODE CONTROL
+    # MODE
     if persona_mode == "🧠 Memory Mode":
         mode_instruction = "Use past memories strongly."
     elif persona_mode == "💬 Casual Talk":
@@ -204,13 +181,12 @@ if st.button("Send") and user_input.strip():
     else:
         mode_instruction = "Respond warmly and supportively."
 
-    # 🔥 BUILD PROMPT
+    # PROMPT
     prompt = f"""
 You are Jabez.
 You are an AI persona for academic research.
 Never claim to be human.
-Avoid emotional dependency.
-Maintain healthy AI-human boundaries.
+Maintain ethical boundaries.
 
 {mode_instruction}
 
@@ -221,10 +197,9 @@ User: {user_input}
 Jabez:
 """
 
-    # 🔥 LIMIT PROMPT SIZE (CRITICAL FIX)
     prompt = prompt[:3000]
 
-    # 🔥 SAFE GENERATION
+    # GENERATE
     ai_text = generate_response(prompt)
 
     emotion = detect_emotion(ai_text)
